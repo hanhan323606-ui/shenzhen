@@ -1,0 +1,92 @@
+name: Shenzhen METAR Telegram
+
+on:
+  schedule:
+    # GitHub Actions 最短公开定时粒度约为 5 分钟
+    - cron: '*/5 * * * *'
+    - cron: '5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  realtime-temperature:
+    name: 实时温度
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 获取最新 ZGSZ METAR 并推送实时温度
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PY'
+          import os, re, json, urllib.request, urllib.parse
+          from datetime import datetime, timezone, timedelta
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          url = "https://aviationweather.gov/api/data/metar?ids=ZGSZ&format=raw&hours=2"
+          raw = urllib.request.urlopen(url, timeout=20).read().decode().strip()
+          lines = [x.strip() for x in raw.splitlines() if x.strip() and not x.startswith('#')]
+          lines = [x for x in lines if not x.startswith('SPECI')]
+          if not lines:
+              raise RuntimeError("没有获取到 ZGSZ METAR")
+
+          line = lines[-1]
+          m = re.search(r'\bT([01])(\d{3})\d{4}\b', line)
+          if m:
+              temp = (-1 if m.group(1) == '1' else 1) * int(m.group(2)) / 10
+          else:
+              m = re.search(r'\b(M?\d{2})/(M?\d{2})\b', line)
+              if not m:
+                  raise RuntimeError("无法解析温度: " + line)
+              x = m.group(1)
+              temp = -int(x[1:]) if x.startswith('M') else int(x)
+
+          now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+          text = (
+              "【实时温度】\n\n"
+              f"地点：深圳宝安机场 ZGSZ\n"
+              f"当前温度：{temp:.1f}°C\n"
+              f"抓取时间：{now:%Y-%m-%d %H:%M:%S} CST\n"
+              "数据源：Aviation Weather Center\n\n"
+              f"原始报文：\n{line}"
+          )
+          api = f"https://api.telegram.org/bot{token}/sendMessage"
+          data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+          urllib.request.urlopen(urllib.request.Request(api, data=data), timeout=20).read()
+          PY
+
+  hourly-metar:
+    name: 一小时 METAR
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '5 * * * *' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 获取并推送一小时 METAR
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'PY'
+          import os, urllib.request, urllib.parse
+          from datetime import datetime, timezone, timedelta
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          url = "https://aviationweather.gov/api/data/metar?ids=ZGSZ&format=raw&hours=2"
+          raw = urllib.request.urlopen(url, timeout=20).read().decode().strip()
+          lines = [x.strip() for x in raw.splitlines() if x.strip() and not x.startswith('#')]
+          if not lines:
+              raise RuntimeError("没有获取到 ZGSZ METAR")
+          line = lines[-1]
+          now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+          text = (
+              "【1小时METAR】\n\n"
+              f"地点：深圳宝安机场 ZGSZ\n"
+              f"抓取时间：{now:%Y-%m-%d %H:%M:%S} CST\n"
+              "数据源：Aviation Weather Center\n\n"
+              f"原始报文：\n{line}"
+          )
+          api = f"https://api.telegram.org/bot{token}/sendMessage"
+          data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+          urllib.request.urlopen(urllib.request.Request(api, data=data), timeout=20).read()
+          PY
